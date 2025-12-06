@@ -1,0 +1,34 @@
+{
+  "name": "api-manager-mercado-libre-axam",
+  "version": "1.0.0",
+  "description": "API REST intermedia (Middleware) para interactuar con el ERP Manager+ y sincronizar con Mercado Libre",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js",
+    "test:ml": "node mercadoLibreAuth.js",
+    "sync:stocks": "node syncStocksML.js",
+    "sync:all": "node syncStocksML.js --all",
+    "sync:dry-run": "node syncStocksML.js --all --dry-run",
+    "scheduler": "node syncSchedulerML.js",
+    "scheduler:start": "node syncSchedulerML.js"
+  },
+  "keywords": [
+    "express",
+    "api",
+    "middleware",
+    "erp",
+    "mercado-libre"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "express": "^4.18.2",
+    "axios": "^1.6.0",
+    "dotenv": "^16.3.1",
+    "cors": "^2.8.5",
+    "node-cron": "^3.0.3",
+    "date-fns": "^2.30.0"
+  }
+}
+

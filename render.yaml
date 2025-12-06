@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: api-manager-mercado-libre
+    env: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 10000
+    # Nota: Agrega las demás variables de entorno en el dashboard de Render
+    # ERP_BASE_URL, ERP_USERNAME, ERP_PASSWORD, RUT_EMPRESA
+    # MERCADOLIBRE_CLIENT_ID, MERCADOLIBRE_CLIENT_SECRET, etc.
+
