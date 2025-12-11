@@ -58,32 +58,61 @@ async function getERPAuthToken() {
 }
 
 /**
+ * Determina si un registro de stock pertenece a "Bodega General" y excluye "Bodega temporal".
+ */
+function isGeneralWarehouse(stockItem = {}) {
+    const name = (
+        stockItem.bodega ||
+        stockItem.almacen ||
+        stockItem.descripcion_bodega ||
+        stockItem.nombre_bodega ||
+        stockItem.bod ||
+        ''
+    ).toString().toLowerCase().trim();
+
+    // Si no hay nombre de bodega, asumimos bodega general (evita descartar todo por falta de campo)
+    if (!name) return true;
+
+    if (name.includes('temporal')) return false;
+    if (name.includes('general')) return true;
+
+    // Fallback: incluir otras bodegas solo si no son temporales
+    return !name.includes('temporal');
+}
+
+/**
  * Extraer stock de un producto desde la respuesta del endpoint de productos
  * 
  * Cuando se usa con_stock=S, el stock viene en el campo "stock" (array de arrays)
  * donde cada objeto tiene un campo "saldo" que es el stock real
  * 
  * @param {Object} product - Objeto del producto de Manager+
- * @returns {number} Stock total del producto
+ * @returns {number} Stock total del producto (solo Bodega General)
  */
 function extractStockFromProduct(product) {
     let stock = 0;
-    
-    if (product.stock && Array.isArray(product.stock) && product.stock.length > 0) {
-        // Iterar sobre cada sub-array en el array principal
-        product.stock.forEach(subArray => {
-            if (Array.isArray(subArray)) {
-                // Sumar todos los "saldo" de cada objeto en el sub-array
-                subArray.forEach(item => {
-                    if (item && typeof item === 'object') {
-                        const saldo = item.saldo || 0;
-                        stock += parseFloat(saldo) || 0;
-                    }
-                });
-            }
-        });
+
+    // El campo stock puede venir como array de arrays o directamente array de objetos
+    const stockEntries = product.stock;
+    if (!Array.isArray(stockEntries)) {
+        return 0;
     }
-    
+
+    const processItem = (item) => {
+        if (!item || typeof item !== 'object') return;
+        if (!isGeneralWarehouse(item)) return;
+        const saldo = item.saldo || 0;
+        stock += parseFloat(saldo) || 0;
+    };
+
+    stockEntries.forEach(entry => {
+        if (Array.isArray(entry)) {
+            entry.forEach(processItem);
+        } else {
+            processItem(entry);
+        }
+    });
+
     return stock;
 }
 
@@ -161,17 +190,27 @@ async function getManagerProductBySKU(sku) {
  * @param {Object} item - Objeto de producto de Mercado Libre
  * @returns {string|null} SKU detectado o null si no existe
  */
+function sanitizeSkuString(rawSku) {
+    if (!rawSku) return null;
+    let sku = rawSku.toString().trim();
+    // Elimina prefijos "SKU", "sku", "Sku" seguidos de separadores comunes
+    sku = sku.replace(/^sku[\s:_-]*/i, '').trim();
+    return sku || null;
+}
+
 function resolveSkuFromMLItem(item = {}) {
     // 1) SKU explícito configurado en Mercado Libre
     if (item.seller_custom_field) {
-        return item.seller_custom_field;
+        const cleaned = sanitizeSkuString(item.seller_custom_field);
+        if (cleaned) return cleaned;
     }
 
     // 2) Buscar atributo SELLER_SKU
     if (Array.isArray(item.attributes)) {
         const skuAttr = item.attributes.find(attr => attr.id === 'SELLER_SKU' || attr.id === 'SELLER_SKU_ID');
         if (skuAttr?.value_name) {
-            return skuAttr.value_name;
+            const cleaned = sanitizeSkuString(skuAttr.value_name);
+            if (cleaned) return cleaned;
         }
     }
 
@@ -552,15 +591,20 @@ async function syncMultipleProducts(skus, options = {}) {
                 try {
                     const result = await syncProductStock(sku, options, mlProductsMap);
                     
-                    // Mostrar resultado solo si hay algo relevante
+                    // Log detallado por resultado
                     if (result.action === 'updated' || result.action === 'would_update') {
                         console.log(`   ✅ ${sku}: ${result.mlStock} → ${result.managerStock}`);
-                    } else if (result.action === 'error') {
-                        console.log(`   ❌ ${sku}: ${result.error}`);
+                    } else if (result.action === 'no_change') {
+                        console.log(`   ℹ️  ${sku}: sin cambios (ML ${result.mlStock} = ERP ${result.managerStock})`);
+                    } else if (result.action === 'skipped') {
+                        console.log(`   ⏭️  ${sku}: omitido (${result.error || 'motivo no especificado'})`);
+                    } else if (result.action === 'error' || !result.success) {
+                        console.log(`   ❌ ${sku}: ${result.error || 'error desconocido'}`);
                     }
                     
                     return result;
                 } catch (error) {
+                    console.log(`   ❌ ${sku}: ${error.message}`);
                     return {
                         sku,
                         success: false,
