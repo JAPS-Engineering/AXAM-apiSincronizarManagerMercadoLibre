@@ -154,6 +154,32 @@ async function getManagerProductBySKU(sku) {
 }
 
 /**
+ * Resolver el SKU de un producto de Mercado Libre desde los datos disponibles.
+ * Priorizamos el campo seller_custom_field y como fallback buscamos el atributo SELLER_SKU.
+ * Si no hay SKU confiable, retornamos null para evitar usar el item_id (no es un SKU del ERP).
+ *
+ * @param {Object} item - Objeto de producto de Mercado Libre
+ * @returns {string|null} SKU detectado o null si no existe
+ */
+function resolveSkuFromMLItem(item = {}) {
+    // 1) SKU explícito configurado en Mercado Libre
+    if (item.seller_custom_field) {
+        return item.seller_custom_field;
+    }
+
+    // 2) Buscar atributo SELLER_SKU
+    if (Array.isArray(item.attributes)) {
+        const skuAttr = item.attributes.find(attr => attr.id === 'SELLER_SKU' || attr.id === 'SELLER_SKU_ID');
+        if (skuAttr?.value_name) {
+            return skuAttr.value_name;
+        }
+    }
+
+    // Sin SKU utilizable
+    return null;
+}
+
+/**
  * Pre-cargar todos los productos de Mercado Libre en un Map para acceso rápido O(1)
  * 
  * @returns {Promise<Map<string, Object>>} Mapa de SKU -> datos del producto
@@ -166,6 +192,7 @@ async function loadAllMercadoLibreProducts() {
     try {
         console.log('📦 Pre-cargando productos de Mercado Libre en memoria...');
         const productMap = new Map();
+        const itemsWithoutSKU = [];
         
         const token = await getAccessToken();
         const userId = ML_USER_ID || (await verifyMercadoLibreAuth()).id;
@@ -205,19 +232,22 @@ async function loadAllMercadoLibreProducts() {
                     });
 
                     const item = itemResponse.data;
-                    const sku = item.seller_custom_field || item.id;
-                    
-                    if (sku) {
-                        // Si el SKU ya existe, mantener el primero (puede haber duplicados)
-                        if (!productMap.has(sku)) {
-                            productMap.set(sku, {
-                                sku: sku,
-                                itemId: item.id,
-                                currentStock: item.available_quantity || 0,
-                                title: item.title,
-                                status: item.status
-                            });
-                        }
+                    const sku = resolveSkuFromMLItem(item);
+
+                    if (!sku) {
+                        itemsWithoutSKU.push({ id: item.id, title: item.title });
+                        continue;
+                    }
+
+                    // Si el SKU ya existe, mantener el primero (puede haber duplicados)
+                    if (!productMap.has(sku)) {
+                        productMap.set(sku, {
+                            sku: sku,
+                            itemId: item.id,
+                            currentStock: item.available_quantity || 0,
+                            title: item.title,
+                            status: item.status
+                        });
                     }
                 } catch (error) {
                     // Continuar con el siguiente producto si hay error
@@ -238,6 +268,11 @@ async function loadAllMercadoLibreProducts() {
         mlProductsCache = productMap;
         
         console.log(`✅ ${productMap.size} SKUs únicos cargados en memoria`);
+        if (itemsWithoutSKU.length > 0) {
+            console.warn(`⚠️  ${itemsWithoutSKU.length} publicaciones no tienen SKU configurado (seller_custom_field o atributo SELLER_SKU).`);
+            console.warn(`   Estas publicaciones se omiten porque no podemos vincularlas con el ERP.`);
+            console.warn(`   Ejemplos: ${itemsWithoutSKU.slice(0, 5).map(i => `${i.id} (${i.title || 'sin título'})`).join(', ')}${itemsWithoutSKU.length > 5 ? '...' : ''}\n`);
+        }
         
         return productMap;
         
@@ -687,6 +722,10 @@ async function syncAllProducts(options = {}) {
         
         // Extraer SKUs del mapa
         const skus = Array.from(mlProductsMap.keys());
+
+        if (skus.length === 0) {
+            throw new Error('No hay publicaciones con SKU configurado en Mercado Libre. Configura seller_custom_field o el atributo SELLER_SKU para cada publicación.');
+        }
         
         console.log(`✅ Sincronizando ${skus.length} SKUs únicos\n`);
         
