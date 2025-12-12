@@ -233,25 +233,52 @@ async function loadAllMercadoLibreProducts() {
         const productMap = new Map();
         const itemsWithoutSKU = [];
         
-        const token = await getAccessToken();
-        const userId = ML_USER_ID || (await verifyMercadoLibreAuth()).id;
+        // Verificar autenticación primero para obtener userId y validar token
+        // Esta función ahora refresca automáticamente el token si está expirado
+        const authResult = await verifyMercadoLibreAuth();
+        const userId = ML_USER_ID || authResult.id;
         
         let offset = 0;
         const limit = 50; // Máximo permitido por Mercado Libre
         let hasMore = true;
+        let token = await getAccessToken();
 
         while (hasMore) {
-            const response = await axios.get(`${ML_API_BASE_URL}/users/${userId}/items/search`, {
-                headers: {
-                    'Authorization': `Bearer ${token}`,
-                    'Content-Type': 'application/json'
-                },
-                params: {
-                    status: 'active',
-                    limit: limit,
-                    offset: offset
+            let response;
+            try {
+                response = await axios.get(`${ML_API_BASE_URL}/users/${userId}/items/search`, {
+                    headers: {
+                        'Authorization': `Bearer ${token}`,
+                        'Content-Type': 'application/json'
+                    },
+                    params: {
+                        status: 'active',
+                        limit: limit,
+                        offset: offset
+                    }
+                });
+            } catch (error) {
+                // Si es un error 401, intentar refrescar el token y reintentar
+                if (error.response?.status === 401) {
+                    console.warn('\n⚠️  Token expirado durante la carga. Refrescando...');
+                    const { refreshAccessToken } = require('./mercadoLibreAuth');
+                    token = await refreshAccessToken();
+                    // Reintentar la petición con el nuevo token
+                    response = await axios.get(`${ML_API_BASE_URL}/users/${userId}/items/search`, {
+                        headers: {
+                            'Authorization': `Bearer ${token}`,
+                            'Content-Type': 'application/json'
+                        },
+                        params: {
+                            status: 'active',
+                            limit: limit,
+                            offset: offset
+                        }
+                    });
+                } else {
+                    throw error;
                 }
-            });
+            }
 
             const itemIds = response.data.results || [];
             
@@ -263,12 +290,29 @@ async function loadAllMercadoLibreProducts() {
             // Obtener detalles de cada producto
             for (const itemId of itemIds) {
                 try {
-                    const itemResponse = await axios.get(`${ML_API_BASE_URL}/items/${itemId}`, {
-                        headers: {
-                            'Authorization': `Bearer ${token}`,
-                            'Content-Type': 'application/json'
+                    let itemResponse;
+                    try {
+                        itemResponse = await axios.get(`${ML_API_BASE_URL}/items/${itemId}`, {
+                            headers: {
+                                'Authorization': `Bearer ${token}`,
+                                'Content-Type': 'application/json'
+                            }
+                        });
+                    } catch (error) {
+                        // Si es un error 401, refrescar token y reintentar
+                        if (error.response?.status === 401) {
+                            const { refreshAccessToken } = require('./mercadoLibreAuth');
+                            token = await refreshAccessToken();
+                            itemResponse = await axios.get(`${ML_API_BASE_URL}/items/${itemId}`, {
+                                headers: {
+                                    'Authorization': `Bearer ${token}`,
+                                    'Content-Type': 'application/json'
+                                }
+                            });
+                        } else {
+                            throw error;
                         }
-                    });
+                    }
 
                     const item = itemResponse.data;
                     const sku = resolveSkuFromMLItem(item);
@@ -316,7 +360,20 @@ async function loadAllMercadoLibreProducts() {
         return productMap;
         
     } catch (error) {
-        console.error('❌ Error al pre-cargar productos de Mercado Libre:', error.message);
+        console.error('\n❌ Error al pre-cargar productos de Mercado Libre:');
+        if (error.response) {
+            console.error(`   Status: ${error.response.status}`);
+            console.error(`   Mensaje: ${JSON.stringify(error.response.data, null, 2)}`);
+            if (error.response.status === 401) {
+                console.error('\n   💡 Solución:');
+                console.error('   1. Verifica que MERCADOLIBRE_ACCESS_TOKEN esté configurado en .env');
+                console.error('   2. Verifica que MERCADOLIBRE_REFRESH_TOKEN esté configurado');
+                console.error('   3. Si los tokens han expirado, obtén nuevos tokens mediante OAuth');
+                console.error('   4. Ejecuta: npm run test:ml para verificar la autenticación\n');
+            }
+        } else {
+            console.error(`   Error: ${error.message}`);
+        }
         throw error;
     }
 }
@@ -353,20 +410,43 @@ async function getMercadoLibreProductStockBySKU(sku, productsMap = null) {
  */
 async function updateMercadoLibreStock(itemId, quantity) {
     try {
-        const token = await getAccessToken();
+        let token = await getAccessToken();
         
-        const response = await axios.put(
-            `${ML_API_BASE_URL}/items/${itemId}`,
-            {
-                available_quantity: quantity
-            },
-            {
-                headers: {
-                    'Authorization': `Bearer ${token}`,
-                    'Content-Type': 'application/json'
+        let response;
+        try {
+            response = await axios.put(
+                `${ML_API_BASE_URL}/items/${itemId}`,
+                {
+                    available_quantity: quantity
+                },
+                {
+                    headers: {
+                        'Authorization': `Bearer ${token}`,
+                        'Content-Type': 'application/json'
+                    }
                 }
+            );
+        } catch (error) {
+            // Si es un error 401, refrescar token y reintentar
+            if (error.response?.status === 401) {
+                const { refreshAccessToken } = require('./mercadoLibreAuth');
+                token = await refreshAccessToken();
+                response = await axios.put(
+                    `${ML_API_BASE_URL}/items/${itemId}`,
+                    {
+                        available_quantity: quantity
+                    },
+                    {
+                        headers: {
+                            'Authorization': `Bearer ${token}`,
+                            'Content-Type': 'application/json'
+                        }
+                    }
+                );
+            } else {
+                throw error;
             }
-        );
+        }
 
         return response.data;
         
@@ -378,6 +458,11 @@ async function updateMercadoLibreStock(itemId, quantity) {
                 ? `Rate limit de Mercado Libre alcanzado. Espera ${retryAfter} segundos antes de continuar.`
                 : `Rate limit de Mercado Libre alcanzado (429). Reduce la concurrencia o espera un momento.`;
             throw new Error(message);
+        }
+        
+        // Detectar errores de autenticación
+        if (error.response?.status === 401) {
+            throw new Error('Token de acceso inválido o expirado. El sistema intentó refrescarlo pero falló.');
         }
         
         // Detectar errores de servidor

@@ -61,7 +61,18 @@ async function refreshAccessToken() {
         return accessToken;
         
     } catch (error) {
-        console.error('❌ Error al refrescar token:', error.response?.data || error.message);
+        console.error('❌ Error al refrescar token:');
+        if (error.response) {
+            console.error(`   Status: ${error.response.status}`);
+            console.error(`   Mensaje: ${JSON.stringify(error.response.data, null, 2)}`);
+            if (error.response.status === 400 || error.response.status === 401) {
+                console.error('\n   💡 El REFRESH_TOKEN puede haber expirado o ser inválido.');
+                console.error('   Necesitas obtener nuevos tokens mediante el flujo OAuth.');
+                console.error('   Consulta el README.md para más información.\n');
+            }
+        } else {
+            console.error(`   Error: ${error.message}`);
+        }
         throw new Error('Error al refrescar token: ' + (error.response?.data?.error_description || error.message));
     }
 }
@@ -102,14 +113,46 @@ async function verifyMercadoLibreAuth() {
     try {
         console.log('🔐 Verificando autenticación con Mercado Libre...');
         
-        const token = await getAccessToken();
+        let token = await getAccessToken();
         
-        const response = await axios.get(`${ML_API_BASE_URL}/users/me`, {
-            headers: {
-                'Authorization': `Bearer ${token}`,
-                'Content-Type': 'application/json'
+        let response;
+        try {
+            response = await axios.get(`${ML_API_BASE_URL}/users/me`, {
+                headers: {
+                    'Authorization': `Bearer ${token}`,
+                    'Content-Type': 'application/json'
+                }
+            });
+        } catch (error) {
+            // Si es un error 401, intentar refrescar el token automáticamente
+            if (error.response?.status === 401 && ML_REFRESH_TOKEN) {
+                console.log('   ⚠️  Token expirado. Refrescando automáticamente...');
+                try {
+                    token = await refreshAccessToken();
+                    // Reintentar la petición con el nuevo token
+                    response = await axios.get(`${ML_API_BASE_URL}/users/me`, {
+                        headers: {
+                            'Authorization': `Bearer ${token}`,
+                            'Content-Type': 'application/json'
+                        }
+                    });
+                } catch (refreshError) {
+                    console.error('\n❌ No se pudo refrescar el token automáticamente:');
+                    if (refreshError.response) {
+                        console.error(`   Status: ${refreshError.response.status}`);
+                        console.error(`   Mensaje: ${JSON.stringify(refreshError.response.data, null, 2)}`);
+                    } else {
+                        console.error(`   Error: ${refreshError.message}`);
+                    }
+                    console.error('\n   💡 El REFRESH_TOKEN puede haber expirado o ser inválido.');
+                    console.error('   Necesitas obtener nuevos tokens mediante el flujo OAuth.');
+                    console.error('   Consulta el README.md para obtener nuevos tokens.\n');
+                    throw refreshError;
+                }
+            } else {
+                throw error;
             }
-        });
+        }
 
         console.log('✅ Autenticación exitosa con Mercado Libre');
         console.log(`👤 Usuario: ${response.data.nickname}`);
@@ -119,12 +162,25 @@ async function verifyMercadoLibreAuth() {
         return response.data;
         
     } catch (error) {
-        console.error('❌ Error en la autenticación con Mercado Libre:');
-        if (error.response) {
-            console.error(`   Status: ${error.response.status}`);
-            console.error(`   Mensaje: ${JSON.stringify(error.response.data, null, 2)}`);
-        } else {
-            console.error(`   Error: ${error.message}`);
+        // Solo mostrar mensajes de error si no fue un error de refresh (ya se mostró arriba)
+        if (!error.response || error.response.status !== 401 || !ML_REFRESH_TOKEN) {
+            console.error('❌ Error en la autenticación con Mercado Libre:');
+            if (error.response) {
+                console.error(`   Status: ${error.response.status}`);
+                console.error(`   Mensaje: ${JSON.stringify(error.response.data, null, 2)}`);
+                if (error.response.status === 401) {
+                    console.error('\n   💡 Posibles causas:');
+                    console.error('   1. El ACCESS_TOKEN ha expirado (válido por 6 horas)');
+                    console.error('   2. El REFRESH_TOKEN ha expirado o es inválido');
+                    console.error('   3. Las credenciales CLIENT_ID o CLIENT_SECRET son incorrectas');
+                    console.error('\n   💡 Solución:');
+                    console.error('   - Verifica que MERCADOLIBRE_REFRESH_TOKEN esté configurado en .env');
+                    console.error('   - Si el REFRESH_TOKEN expiró, obtén nuevos tokens mediante OAuth');
+                    console.error('   - Consulta el README.md para obtener nuevos tokens\n');
+                }
+            } else {
+                console.error(`   Error: ${error.message}`);
+            }
         }
         throw new Error('Error al autenticarse con Mercado Libre: ' + (error.response?.data?.message || error.message));
     }
